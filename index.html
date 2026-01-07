@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Decoder-Only Transformer Visualizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Fira+Code:wght@400;500&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            overflow: hidden;
+        }
+
+        .canvas-container {
+            position: relative;
+            height: calc(100vh - 80px);
+            width: 100%;
+            cursor: grab;
+        }
+
+        .canvas-container:active {
+            cursor: grabbing;
+        }
+
+        #transformer-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .control-knob {
+            @apply h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid #3b82f6;
+            padding: 8px 12px;
+            border-radius: 6px;
+            pointer-events: none;
+            font-size: 12px;
+            z-index: 100;
+            display: none;
+            max-width: 200px;
+        }
+
+        .node-label {
+            font-family: 'Fira Code', monospace;
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header / Navbar -->
+    <nav class="h-16 glass-panel flex items-center justify-between px-6 z-50 relative">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold">T</div>
+            <h1 class="text-xl font-bold tracking-tight">Decoder<span class="text-blue-400">Viz</span></h1>
+        </div>
+        
+        <div class="flex gap-4 items-center">
+            <input type="text" id="prompt-input" value="The cat sat on" class="bg-slate-900 border border-slate-700 rounded px-3 py-1 text-sm w-64 focus:outline-none focus:border-blue-500" placeholder="Enter prompt...">
+            <button id="btn-generate" class="bg-blue-600 hover:bg-blue-500 transition-colors px-4 py-1 rounded text-sm font-semibold">Generate</button>
+            <div class="h-6 w-px bg-slate-700"></div>
+            <button id="btn-play" class="p-2 hover:bg-slate-700 rounded transition-colors">
+                <svg id="play-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button id="btn-reset" class="p-2 hover:bg-slate-700 rounded transition-colors text-slate-400">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+            </button>
+        </div>
+    </nav>
+
+    <main class="flex h-screen pt-16">
+        <!-- Sidebar Controls -->
+        <aside class="w-72 glass-panel p-6 overflow-y-auto z-40">
+            <section class="mb-8">
+                <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Architecture</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs mb-1">Layers: <span id="val-layers">3</span></label>
+                        <input type="range" id="param-layers" min="1" max="6" value="3" class="w-full control-knob">
+                    </div>
+                    <div>
+                        <label class="block text-xs mb-1">Attention Heads: <span id="val-heads">4</span></label>
+                        <input type="range" id="param-heads" min="1" max="8" value="4" class="w-full control-knob">
+                    </div>
+                    <div>
+                        <label class="block text-xs mb-1">Emb Dimension: <span id="val-dim">128</span></label>
+                        <input type="range" id="param-dim" min="64" max="512" step="64" value="128" class="w-full control-knob">
+                    </div>
+                </div>
+            </section>
+
+            <section class="mb-8">
+                <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Visualization</h2>
+                <div class="space-y-3">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="show-residuals" checked class="w-4 h-4 rounded bg-slate-800 border-slate-700">
+                        <span class="text-sm">Show Residuals</span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="show-vectors" class="w-4 h-4 rounded bg-slate-800 border-slate-700">
+                        <span class="text-sm">Detailed Vector View</span>
+                    </label>
+                    <div class="pt-2">
+                        <label class="block text-xs mb-1">Anim Speed</label>
+                        <input type="range" id="param-speed" min="0.1" max="2" step="0.1" value="1" class="w-full control-knob">
+                    </div>
+                </div>
+            </section>
+
+            <div class="mt-auto p-4 rounded-lg bg-blue-900/20 border border-blue-500/30">
+                <h3 class="text-sm font-bold text-blue-300 mb-1">Step Information</h3>
+                <p id="step-desc" class="text-xs text-slate-300 leading-relaxed">
+                    Click "Generate" to start the process.
+                </p>
+            </div>
+        </aside>
+
+        <!-- Main Visualization Area -->
+        <div class="flex-1 canvas-container" id="container">
+            <canvas id="transformer-canvas"></canvas>
+            <div id="tooltip" class="tooltip"></div>
+            
+            <!-- Floating UI Overlays -->
+            <div class="absolute bottom-6 right-6 flex flex-col items-end gap-2">
+                <div class="glass-panel p-3 rounded-lg text-[10px] space-y-1">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-blue-500"></span> <span>Input Tokens</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-purple-500"></span> <span>Attention Ops</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500"></span> <span>Feed Forward</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-orange-500"></span> <span>Prediction</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const canvas = document.getElementById('transformer-canvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('container');
+        const tooltip = document.getElementById('tooltip');
+
+        // State Management
+        let state = {
+            layers: 3,
+            heads: 4,
+            dim: 128,
+            speed: 1,
+            isPlaying: false,
+            currentTime: 0,
+            tokens: [],
+            camera: { x: 0, y: 0, zoom: 0.8 },
+            isDragging: false,
+            lastMouse: { x: 0, y: 0 },
+            hoveredId: null,
+            animationStep: 0, // 0: Idle, 1: Embedding, 2: Blocks, 3: Softmax
+        };
+
+        const THEME = {
+            bg: '#0f172a',
+            token: '#3b82f6',
+            attn: '#a855f7',
+            ffn: '#10b981',
+            resid: '#64748b',
+            text: '#f8fafc',
+            dimText: '#94a3b8'
+        };
+
+        // --- Core Classes ---
+
+        class Token {
+            constructor(text, index) {
+                this.text = text;
+                this.index = index;
+                this.x = 0;
+                this.y = 0;
+                this.opacity = 0;
+            }
+        }
+
+        // --- Initialization ---
+
+        function init() {
+            resize();
+            window.addEventListener('resize', resize);
+            
+            // Interaction listeners
+            container.addEventListener('mousedown', e => {
+                state.isDragging = true;
+                state.lastMouse = { x: e.clientX, y: e.clientY };
+            });
+            
+            window.addEventListener('mousemove', e => {
+                if (state.isDragging) {
+                    state.camera.x += (e.clientX - state.lastMouse.x);
+                    state.camera.y += (e.clientY - state.lastMouse.y);
+                    state.lastMouse = { x: e.clientX, y: e.clientY };
+                }
+                checkHover(e);
+            });
+            
+            window.addEventListener('mouseup', () => state.isDragging = false);
+            
+            container.addEventListener('wheel', e => {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? 0.95 : 1.05;
+                state.camera.zoom = Math.max(0.2, Math.min(2, state.camera.zoom * delta));
+            }, { passive: false });
+
+            // UI Listeners
+            document.getElementById('btn-generate').addEventListener('click', () => {
+                const text = document.getElementById('prompt-input').value;
+                state.tokens = text.split(/\s+/).map((t, i) => new Token(t, i));
+                state.animationStep = 1;
+                state.currentTime = 0;
+                state.isPlaying = true;
+                updateStepDescription("Generating embeddings for tokens...");
+            });
+
+            document.getElementById('btn-play').addEventListener('click', () => {
+                state.isPlaying = !state.isPlaying;
+                document.getElementById('play-icon').innerHTML = state.isPlaying ? 
+                    '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>' : 
+                    '<path d="M8 5v14l11-7z"/>';
+            });
+
+            document.getElementById('btn-reset').addEventListener('click', () => {
+                state.animationStep = 0;
+                state.currentTime = 0;
+                state.tokens = [];
+                state.camera = { x: 0, y: 0, zoom: 0.8 };
+            });
+
+            // Params
+            ['layers', 'heads', 'dim', 'speed'].forEach(p => {
+                const el = document.getElementById(`param-${p}`);
+                el.addEventListener('input', () => {
+                    state[p] = parseFloat(el.value);
+                    document.getElementById(`val-${p}`).innerText = el.value;
+                });
+            });
+
+            requestAnimationFrame(render);
+        }
+
+        function resize() {
+            canvas.width = container.clientWidth * window.devicePixelRatio;
+            canvas.height = container.clientHeight * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+
+        function updateStepDescription(text) {
+            document.getElementById('step-desc').innerText = text;
+        }
+
+        function checkHover(e) {
+            // Simplified hover logic
+            const rect = canvas.getBoundingClientRect();
+            const mx = (e.clientX - rect.left - state.camera.x) / state.camera.zoom;
+            const my = (e.clientY - rect.top - state.camera.y) / state.camera.zoom;
+            // Real implementation would hit-test specific block bounds
+        }
+
+        // --- Drawing Helpers ---
+
+        function drawBlock(x, y, w, h, label, color, opacity = 1) {
+            ctx.globalAlpha = opacity;
+            ctx.fillStyle = color + '22';
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            
+            // Rounded rect
+            ctx.beginPath();
+            ctx.roundRect(x - w/2, y - h/2, w, h, 8);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = THEME.text;
+            ctx.font = 'bold 12px Inter';
+            ctx.textAlign = 'center';
+            ctx.fillText(label, x, y + 4);
+            ctx.globalAlpha = 1;
+        }
+
+        function drawLine(x1, y1, x2, y2, color, width = 1, dash = []) {
+            ctx.setLineDash(dash);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        function drawAttentionFlow(tIdx, layerY, tokenCount) {
+            const spacing = 100;
+            const startX = (tIdx - (tokenCount-1)/2) * spacing;
+            const startY = layerY + 80;
+            
+            for(let i = 0; i <= tIdx; i++) {
+                const targetX = (i - (tokenCount-1)/2) * spacing;
+                const weight = 0.2 + (Math.random() * 0.8); // Mock weight
+                
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.bezierCurveTo(startX, startY - 40, targetX, startY - 40, targetX, layerY + 40);
+                ctx.strokeStyle = THEME.attn + (Math.floor(weight * 255)).toString(16).padStart(2, '0');
+                ctx.lineWidth = weight * 3;
+                ctx.stroke();
+            }
+        }
+
+        // --- Main Render Loop ---
+
+        function render(time) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.save();
+            ctx.translate(canvas.width / (2 * window.devicePixelRatio) + state.camera.x, 
+                         canvas.height / (2 * window.devicePixelRatio) + state.camera.y);
+            ctx.scale(state.camera.zoom, state.camera.zoom);
+
+            if (state.tokens.length > 0) {
+                renderModel();
+            } else {
+                renderEmptyState();
+            }
+
+            ctx.restore();
+
+            if (state.isPlaying) {
+                state.currentTime += 0.016 * state.speed;
+                updateAnimationProgress();
+            }
+
+            requestAnimationFrame(render);
+        }
+
+        function updateAnimationProgress() {
+            // Logic to move between high-level steps
+            if (state.animationStep === 1 && state.currentTime > 1) {
+                state.animationStep = 2;
+                state.currentTime = 0;
+                updateStepDescription("Processing through stacked decoder layers...");
+            } else if (state.animationStep === 2 && state.currentTime > state.layers * 2) {
+                state.animationStep = 3;
+                state.currentTime = 0;
+                updateStepDescription("Computing probability distribution for next token.");
+            }
+        }
+
+        function renderEmptyState() {
+            ctx.fillStyle = THEME.dimText;
+            ctx.font = 'italic 16px Inter';
+            ctx.textAlign = 'center';
+            ctx.fillText("Enter a prompt and click Generate to see the architecture", 0, 0);
+        }
+
+        function renderModel() {
+            const spacing = 100;
+            const blockHeight = 160;
+            const startY = 300;
+            const totalTokens = state.tokens.length;
+
+            // 1. Draw Tokens & Embeddings
+            state.tokens.forEach((t, i) => {
+                const x = (i - (totalTokens - 1) / 2) * spacing;
+                const y = startY;
+                
+                // Animating Entry
+                const tokenProgress = Math.min(1, state.currentTime * 2 - i * 0.1);
+                if (state.animationStep >= 1 && tokenProgress > 0) {
+                    ctx.globalAlpha = tokenProgress;
+                    
+                    // Token Box
+                    drawBlock(x, y, 80, 40, t.text, THEME.token);
+                    
+                    // Embedding line
+                    drawLine(x, y - 20, x, y - 60, THEME.token, 2, [5, 5]);
+                    
+                    // Positional Encoding Node
+                    ctx.beginPath();
+                    ctx.arc(x + 20, y - 40, 6, 0, Math.PI * 2);
+                    ctx.fillStyle = '#f59e0b';
+                    ctx.fill();
+                    
+                    ctx.globalAlpha = 1;
+                }
+            });
+
+            // 2. Decoder Blocks
+            if (state.animationStep >= 2) {
+                for (let l = 0; l < state.layers; l++) {
+                    const layerY = startY - 120 - (l * blockHeight);
+                    const layerProgress = Math.min(1, state.currentTime - (l * 1.5));
+                    
+                    if (layerProgress <= 0) continue;
+
+                    // Layer Background Outline
+                    ctx.strokeStyle = '#1e293b';
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([10, 5]);
+                    ctx.strokeRect(-(totalTokens * spacing)/2 - 10, layerY - 60, (totalTokens * spacing) + 20, 120);
+                    ctx.setLineDash([]);
+
+                    // Components for each token
+                    state.tokens.forEach((t, i) => {
+                        const x = (i - (totalTokens - 1) / 2) * spacing;
+                        
+                        // Vertical Flow line
+                        drawLine(x, layerY + 60, x, layerY - 60, THEME.resid, 1);
+
+                        // Masked Multi-Head Attention
+                        if (layerProgress > 0.2) {
+                            const attnOpacity = Math.min(1, (layerProgress - 0.2) * 2);
+                            drawBlock(x, layerY + 20, 70, 30, "MHA", THEME.attn, attnOpacity);
+                            
+                            // Visualizing the "Masked" aspect
+                            if (attnOpacity > 0.5) {
+                                drawAttentionFlow(i, layerY - 20, totalTokens);
+                            }
+                        }
+
+                        // FFN
+                        if (layerProgress > 0.6) {
+                            const ffnOpacity = Math.min(1, (layerProgress - 0.6) * 2);
+                            drawBlock(x, layerY - 30, 70, 30, "FFN", THEME.ffn, ffnOpacity);
+                        }
+                    });
+
+                    // Layer Label
+                    ctx.fillStyle = THEME.dimText;
+                    ctx.font = 'bold 10px Fira Code';
+                    ctx.textAlign = 'right';
+                    ctx.fillText(`LAYER ${l+1}`, -(totalTokens * spacing)/2 - 20, layerY + 5);
+                }
+            }
+
+            // 3. Final Prediction (Softmax)
+            if (state.animationStep >= 3) {
+                const finalY = startY - 120 - (state.layers * blockHeight) - 40;
+                const lastX = ((totalTokens - 1) - (totalTokens - 1) / 2) * spacing;
+                
+                // Path from last token of last layer
+                drawLine(lastX, finalY + 60, lastX, finalY, '#f59e0b', 2);
+                
+                // Softmax Block
+                drawBlock(lastX, finalY - 20, 100, 40, "SOFTMAX", '#f59e0b');
+
+                // Probabilities Visualization
+                const probWidth = 120;
+                const probs = [0.85, 0.1, 0.03, 0.02];
+                const vocab = ["mat", "floor", "bed", "room"];
+
+                probs.forEach((p, i) => {
+                    const py = finalY - 80 - (i * 20);
+                    ctx.fillStyle = i === 0 ? '#f59e0b' : '#334155';
+                    ctx.fillRect(lastX, py, p * probWidth, 12);
+                    
+                    ctx.fillStyle = THEME.text;
+                    ctx.font = '10px Fira Code';
+                    ctx.textAlign = 'left';
+                
